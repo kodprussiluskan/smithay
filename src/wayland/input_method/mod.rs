@@ -66,8 +66,8 @@
 //! ```
 
 use wayland_server::{
-    backend::GlobalId, protocol::wl_surface::WlSurface, Client, DataInit, Dispatch, DisplayHandle,
-    GlobalDispatch, New,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, backend::GlobalId,
+    protocol::wl_surface::WlSurface,
 };
 
 use wayland_protocols_misc::zwp_input_method_v2::server::{
@@ -211,9 +211,7 @@ where
                 user_data.insert_if_missing(InputMethodHandle::default);
                 let handle = user_data.get::<InputMethodHandle>().unwrap();
                 let text_input_handle = user_data.get::<TextInputHandle>().unwrap();
-                text_input_handle.with_focused_text_input(|ti, surface| {
-                    ti.enter(surface);
-                });
+                let first_method = !handle.has_instance();
                 let keyboard_handle = seat.get_keyboard().unwrap();
                 let instance = data_init.init(
                     input_method,
@@ -228,6 +226,9 @@ where
                     },
                 );
                 handle.add_instance(&instance);
+                if first_method {
+                    text_input_handle.enter();
+                }
             }
             zwp_input_method_manager_v2::Request::Destroy => {
                 // Nothing to do

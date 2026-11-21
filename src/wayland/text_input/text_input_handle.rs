@@ -6,7 +6,7 @@ use wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::{
     self, ChangeCause, ContentHint, ContentPurpose, ZwpTextInputV3,
 };
 use wayland_server::backend::{ClientId, ObjectId};
-use wayland_server::{protocol::wl_surface::WlSurface, Dispatch, Resource};
+use wayland_server::{Dispatch, Resource, protocol::wl_surface::WlSurface};
 
 use crate::input::SeatHandler;
 use crate::utils::{Logical, Rectangle};
@@ -31,7 +31,6 @@ impl TextInput {
                 let instance_id = text_input.instance.id();
                 if instance_id.same_client_as(&surface.id()) {
                     f(&text_input.instance, surface, text_input.serial);
-                    break;
                 }
             }
         };
@@ -88,7 +87,7 @@ impl TextInputHandle {
             .iter_mut()
             .find(|instance| instance.instance == *text_input)
         {
-            instance.serial += 1
+            instance.serial = instance.serial.wrapping_add(1)
         }
     }
 
@@ -246,14 +245,22 @@ where
                 pending_state.enable = Some(false);
             }
             zwp_text_input_v3::Request::SetSurroundingText { text, cursor, anchor } => {
-                pending_state.surrounding_text = Some((text, cursor as u32, anchor as u32));
+                if text.len() <= 4000
+                    && text.is_char_boundary(cursor as usize)
+                    && text.is_char_boundary(anchor as usize)
+                {
+                    pending_state.surrounding_text = Some((text, cursor as u32, anchor as u32));
+                }
             }
             zwp_text_input_v3::Request::SetTextChangeCause { cause } => {
-                pending_state.text_change_cause = Some(cause.into_result().unwrap());
+                if let Ok(cause) = cause.into_result() {
+                    pending_state.text_change_cause = Some(cause);
+                }
             }
             zwp_text_input_v3::Request::SetContentType { hint, purpose } => {
-                pending_state.content_type =
-                    Some((hint.into_result().unwrap(), purpose.into_result().unwrap()));
+                if let (Ok(hint), Ok(purpose)) = (hint.into_result(), purpose.into_result()) {
+                    pending_state.content_type = Some((hint, purpose));
+                }
             }
             zwp_text_input_v3::Request::SetCursorRectangle { x, y, width, height } => {
                 pending_state.cursor_rectangle = Some(Rectangle::new((x, y).into(), (width, height).into()));
@@ -332,6 +339,9 @@ where
         let deactivate_im = {
             let mut inner = data.handle.inner.lock().unwrap();
             inner.instances.retain(|inst| inst.instance.id() != destroyed_id);
+            if inner.active_text_input_id.as_ref() == Some(&destroyed_id) {
+                inner.active_text_input_id = None;
+            }
             let destroyed_focused = inner
                 .focus
                 .as_ref()

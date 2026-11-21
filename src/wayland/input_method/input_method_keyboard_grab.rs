@@ -6,15 +6,15 @@ use std::{
 use wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_keyboard_grab_v2::{
     self, ZwpInputMethodKeyboardGrabV2,
 };
-use wayland_server::backend::ClientId;
 use wayland_server::Dispatch;
+use wayland_server::backend::ClientId;
 
 use crate::input::{
+    SeatHandler,
     keyboard::{
         GrabStartData as KeyboardGrabStartData, KeyboardGrab, KeyboardHandle, KeyboardInnerHandle,
         ModifiersState,
     },
-    SeatHandler,
 };
 use crate::wayland::text_input::TextInputHandle;
 use crate::{
@@ -42,8 +42,8 @@ where
 {
     fn input(
         &mut self,
-        _data: &mut D,
-        _handle: &mut KeyboardInnerHandle<'_, D>,
+        data: &mut D,
+        handle: &mut KeyboardInnerHandle<'_, D>,
         keycode: Keycode,
         key_state: KeyState,
         modifiers: Option<ModifiersState>,
@@ -51,7 +51,15 @@ where
         time: u32,
     ) {
         let inner = self.inner.lock().unwrap();
-        let keyboard = inner.grab.as_ref().unwrap();
+        let mut active = false;
+        inner
+            .text_input_handle
+            .with_active_text_input(|_, _| active = true);
+        let Some(keyboard) = inner.grab.as_ref().filter(|_| active) else {
+            drop(inner);
+            handle.input(data, keycode, key_state, modifiers, serial, time);
+            return;
+        };
         inner
             .text_input_handle
             .active_text_input_serial_or_default(serial.0, |serial| {
@@ -106,11 +114,15 @@ impl<D: SeatHandler + 'static> Dispatch<ZwpInputMethodKeyboardGrabV2, InputMetho
     fn destroyed(
         state: &mut D,
         _client: ClientId,
-        _object: &ZwpInputMethodKeyboardGrabV2,
+        object: &ZwpInputMethodKeyboardGrabV2,
         data: &InputMethodKeyboardUserData<D>,
     ) {
-        data.handle.inner.lock().unwrap().grab = None;
-        data.keyboard_handle.unset_grab(state);
+        let mut inner = data.handle.inner.lock().unwrap();
+        if inner.grab.as_ref() == Some(object) {
+            inner.grab = None;
+            drop(inner);
+            data.keyboard_handle.unset_grab(state);
+        }
     }
 
     fn request(
