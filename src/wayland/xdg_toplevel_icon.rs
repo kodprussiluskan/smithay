@@ -370,7 +370,8 @@ impl<D: XdgToplevelIconHandler> Dispatch<XdgToplevelIconV1, XdgToplevelIconUserD
                 });
                 data.add_buffer(buffer.clone(), scale, shm);
             }
-            Request::Destroy => {}
+            // The backend can defer the destroyed callback until after subsequent requests.
+            Request::Destroy => data.unregister_all_hooks(),
             _ => unreachable!(),
         }
     }
