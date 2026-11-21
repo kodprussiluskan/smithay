@@ -110,6 +110,32 @@ impl InputMethodHandle {
         keyboard.grab.is_some()
     }
 
+    /// The serial of the live input-method keyboard grab resource.
+    pub fn keyboard_grab_serial(&self) -> Option<crate::utils::Serial> {
+        let inner = self.inner.lock().unwrap();
+        let keyboard = inner.keyboard_grab.inner.lock().unwrap();
+        keyboard.grab.as_ref().map(|(_, serial)| *serial)
+    }
+
+    /// Resume a live input-method grab after a compositor grab has finished.
+    pub fn resume_keyboard_grab<D: SeatHandler + 'static>(
+        &self,
+        state: &mut D,
+        keyboard: &KeyboardHandle<D>,
+    ) {
+        let grab = self.inner.lock().unwrap().keyboard_grab.clone();
+        let serial = grab
+            .inner
+            .lock()
+            .unwrap()
+            .grab
+            .as_ref()
+            .map(|(_, serial)| *serial);
+        if let Some(serial) = serial.filter(|_| !keyboard.is_grabbed()) {
+            keyboard.set_grab(state, grab, serial);
+        }
+    }
+
     pub(crate) fn set_text_input_rectangle<D: SeatHandler + 'static>(
         &self,
         state: &mut D,
@@ -311,22 +337,25 @@ where
                 }
             }
             zwp_input_method_v2::Request::GrabKeyboard { keyboard } => {
-                let input_method = data.handle.inner.lock().unwrap();
-                data.keyboard_handle.set_grab(
-                    state,
-                    input_method.keyboard_grab.clone(),
-                    SERIAL_COUNTER.next_serial(),
-                );
+                let grab = data.handle.inner.lock().unwrap().keyboard_grab.clone();
                 let instance = data_init.init(
                     keyboard,
                     InputMethodKeyboardUserData {
-                        handle: input_method.keyboard_grab.clone(),
+                        handle: grab.clone(),
                         keyboard_handle: data.keyboard_handle.clone(),
                     },
                 );
-                let mut keyboard = input_method.keyboard_grab.inner.lock().unwrap();
-                keyboard.grab = Some(instance.clone());
-                keyboard.text_input_handle = data.text_input_handle.clone();
+                let serial = SERIAL_COUNTER.next_serial();
+                let previous = {
+                    let mut keyboard = grab.inner.lock().unwrap();
+                    keyboard.text_input_handle = data.text_input_handle.clone();
+                    keyboard.grab.replace((instance.clone(), serial))
+                };
+                if !data.keyboard_handle.is_grabbed()
+                    || previous.is_some_and(|(_, serial)| data.keyboard_handle.has_grab(serial))
+                {
+                    data.keyboard_handle.set_grab(state, grab, serial);
+                }
                 let guard = data.keyboard_handle.arc.internal.lock().unwrap();
                 instance.repeat_info(guard.repeat_rate, guard.repeat_delay);
                 let keymap_file = data.keyboard_handle.arc.keymap.lock().unwrap();
@@ -370,7 +399,7 @@ where
         let popup = inner.popup_handle.surface.take();
         let keyboard = inner.keyboard_grab.inner.lock().unwrap().grab.take();
         drop(inner);
-        if keyboard.is_some() {
+        if keyboard.is_some_and(|(_, serial)| data.keyboard_handle.has_grab(serial)) {
             data.keyboard_handle.unset_grab(state);
         }
         if let Some(popup) = popup.filter(|popup| popup.get_parent().is_some()) {
